@@ -24,6 +24,7 @@ em,i{font-style:italic}
 :focus{outline:none}
 :focus-visible{outline:1px solid var(--ink);outline-offset:3px}
 [tabindex="-1"]:focus-visible{outline:none}
+[hidden]{display:none!important}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);clip-path:inset(50%);white-space:nowrap}
 
 /* plain words: links and buttons, underline on hover and focus only */
@@ -69,8 +70,9 @@ em,i{font-style:italic}
 
 /* rendered markdown */
 .md{margin-top:clamp(56px,14vh,160px);font-size:18px;line-height:1.5;align-items:start}
-.md>*{grid-column:2/9;max-width:65ch}
-.md>*+*{margin-top:1em}
+.md>*,.md .part>*{grid-column:2/9;max-width:65ch}
+.md>*+*,.md .part>*+*{margin-top:1em}
+.md .part{display:contents}
 .md h1{font-size:clamp(26px,2.6vw,40px);line-height:1.12;font-weight:400;letter-spacing:-.01em;max-width:24em;margin-bottom:.4em}
 .md .lede{font-size:18px;font-style:italic;margin-bottom:.4em}
 .md h2{font-size:clamp(24px,2.2vw,34px);line-height:1.12;font-weight:400;letter-spacing:-.01em}
@@ -78,6 +80,7 @@ em,i{font-style:italic}
 .md .sec{grid-column:2/-1;max-width:none;display:grid;grid-template-columns:repeat(11,minmax(0,1fr));column-gap:16px;align-items:baseline;margin-top:2.6em;scroll-margin-top:80px}
 .md .sec h2{grid-column:1/8;max-width:24em}
 .md .sec .w{grid-column:8;font-size:16px}
+.md .sec .w+.w{grid-column:9}
 .md .sec+*{margin-top:.8em}
 .md strong{font-weight:600}
 .md a{text-decoration:underline;text-decoration-thickness:1px;text-underline-offset:.18em;overflow-wrap:anywhere}
@@ -98,6 +101,22 @@ em,i{font-style:italic}
 .md td{padding:.3em 2.2em .3em 0;vertical-align:top}
 .md th:last-child,.md td:last-child{padding-right:0}
 .loading{font-size:16px}
+
+/* editing: the section turns into its markdown source in place */
+.state{grid-column:2/9;font-size:15px;line-height:1.35;display:flex;flex-wrap:wrap;align-items:center;column-gap:1.4em}
+.state:empty{display:none}
+.state .w{font-size:15px}
+.hist{margin-top:40px;font-size:16px}
+.hist>*{grid-column:2/9}
+.hrow{display:flex;flex-wrap:wrap;align-items:center;column-gap:1.6em;min-height:44px}
+.hrow .n{opacity:.55}
+.md .ed{grid-column:2/9;max-width:65ch;margin-top:2.6em;scroll-margin-top:80px}
+.md>.ed:first-child{margin-top:0}
+.ed .elabel{font-size:15px;line-height:1.35;font-style:italic;margin-bottom:12px}
+.ed .field{font-size:16px;line-height:1.55;overflow-wrap:anywhere}
+.ed .acts{display:flex;gap:28px;margin-top:10px;font-size:16px}
+.ed .small{margin-top:6px}
+.ed .small:empty{display:none}
 
 /* notes */
 .notes{margin-top:clamp(80px,18vh,200px);align-items:start;font-size:18px;line-height:1.5}
@@ -152,7 +171,7 @@ textarea.field{resize:none;overflow:hidden;min-height:calc(2 * 1.5em + 14px)}
   .blurb{padding-top:6px;font-size:15px}
   .hero .right{margin-top:10px}
   .md{display:block;margin-top:56px;font-size:17px}
-  .md>*{max-width:none}
+  .md>*,.md .part>*{max-width:none}
   .md h1{font-size:25px}
   .md .lede{font-size:17px}
   .md h2{font-size:23px}
@@ -172,6 +191,7 @@ textarea.field{resize:none;overflow:hidden;min-height:calc(2 * 1.5em + 14px)}
   .note{display:block;padding:18px 0 6px}
   .note .na{display:flex;gap:26px;margin-top:2px}
   .lock form{gap:22px}
+  .hrow{column-gap:1.1em}
 }
 @media (min-width:768px) and (max-width:1100px){
   .big,.title{font-size:8vw}
@@ -233,8 +253,8 @@ const store = {
   del(k){ try { localStorage.removeItem(k); } catch (e) {} },
 };
 
-/* ---------- screenshot hook: #shot=index|entry|notes, fake notes, no API ---------- */
-const SHOT = (location.hash.match(/^#shot=(index|entry|notes)\b/) || [])[1] || null;
+/* ---------- screenshot hook: #shot=index|entry|edit|history|notes, fake data, no API ---------- */
+const SHOT = (location.hash.match(/^#shot=(index|entry|edit|history|notes)\b/) || [])[1] || null;
 const FAKE = SHOT ? [
   {id:3, ts:new Date(2026,9,9,20,41).getTime(), entry:'trivia-night', edited:null,
    text:'Go with Board Exam Night. Admit cards as the confirmation email, recess after round 3.'},
@@ -244,6 +264,8 @@ const FAKE = SHOT ? [
    text:'Ask the bar about a Wednesday. Pitch: a full room in exchange for the space and a pitcher for the winners.'},
 ] : null;
 let fakeId = 3;
+const FAKE_DOCS = [];
+const MAXDOC = 200000;
 
 /* ---------- key: capture #k= / &k= once, then scrub it from the URL ---------- */
 function takeKey(){
@@ -419,7 +441,9 @@ function blocks(L, opt){
       const lv = Math.min(m[1].length, 3), body = inline(m[2]);
       if (opt.top && m[1].length === 2) {
         const n = opt.sec.n++;
-        H.push('<div class="sec" id="s' + n + '"><h2>' + body + '</h2><button class="w" type="button" data-sec="' + n + '" aria-label="Copy section: ' + esc(inlineText(m[2])) + '">Copy</button></div>');
+        const nm = esc(inlineText(m[2]));
+        H.push('<div class="sec" id="s' + n + '"><h2>' + body + '</h2><button class="w" type="button" data-sec="' + n + '" aria-label="Copy section: ' + nm + '">Copy</button>' +
+          (opt.edit ? '<button class="w" type="button" data-edit="' + (n + 1) + '" aria-label="Edit section: ' + nm + '">Edit</button>' : '') + '</div>');
       } else if (opt.top && lv === 1 && !opt.sec.lede) {
         opt.sec.lede = true;
         H.push('<p class="lede">' + body + '</p>');
@@ -501,20 +525,26 @@ function list(L, i){
   return {i, h: html + '</' + tag + '>', t: text.join(loose ? '\n\n' : '\n')};
 }
 
-function sectionsOf(src){
-  const out = []; let cur = null, fence = false;
+/* Exact slices of the source: parts[0] is everything before the first H2
+   (maybe empty), parts[n + 1] is H2 section n. parts.join('') === src. */
+function splitParts(src){
+  const starts = [0]; let fence = false, at = 0;
   src.split('\n').forEach(l => {
     if (RX.fence.test(l)) fence = !fence;
-    if (!fence && /^##[ \t]/.test(l)) { if (cur) out.push(cur); cur = [l]; }
-    else if (cur) cur.push(l);
+    else if (!fence && /^##[ \t]/.test(l)) starts.push(at);
+    at += l.length + 1;
   });
-  if (cur) out.push(cur);
-  return out.map(a => a.join('\n').replace(/\s+$/, ''));
+  return starts.map((st, k) => src.slice(st, k + 1 < starts.length ? starts[k + 1] : src.length));
 }
-function renderMd(src){
-  const s = src.replace(/\r\n?/g, '\n');
-  const r = blocks(s.split('\n'), {top: true, sec: {n: 0}});
-  return {html: r[0], text: r[1].replace(/\n{3,}/g, '\n\n').trim() + '\n', sections: sectionsOf(s)};
+function renderMd(src, edit){
+  const s = src.replace(/\r\n?/g, '\n'), parts = splitParts(s), sec = {n: 0}, H = [], T = [];
+  parts.forEach((p, k) => {
+    const r = blocks(p.split('\n'), {top: true, sec, edit});
+    H.push('<div class="part" data-part="' + k + '">' + r[0] + '</div>');
+    if (r[1]) T.push(r[1]);
+  });
+  return {html: H.join(''), text: T.join('\n\n').replace(/\n{3,}/g, '\n\n').trim() + '\n', parts,
+          sections: parts.slice(1).map(p => p.replace(/\s+$/, ''))};
 }
 
 /* ======================================================================
@@ -538,6 +568,14 @@ async function api(method, path, body, keyOverride){
 function fakeApi(method, path, body){
   const q = new URLSearchParams(path.split('?')[1] || '');
   const id = +q.get('id');
+  if (path.indexOf('/doc/versions') === 0) return Promise.resolve(FAKE_DOCS.map(d => ({id: d.id, ts: d.ts, len: d.text.length})).reverse());
+  if (path.indexOf('/doc') === 0) {
+    const last = FAKE_DOCS[FAKE_DOCS.length - 1] || null;
+    if (method === 'GET') return Promise.resolve(id ? FAKE_DOCS.find(d => d.id === id) : last);
+    if ((last ? last.id : 0) !== body.base) { const e = new Error('conflict'); e.status = 409; return Promise.reject(e); }
+    const d = {id: FAKE_DOCS.length + 1, ts: Date.now(), entry: q.get('entry'), text: body.text.trim() + '\n'};
+    FAKE_DOCS.push(d); return Promise.resolve(Object.assign({}, d));
+  }
   if (method === 'GET') return Promise.resolve(FAKE.filter(n => !q.get('entry') || n.entry === q.get('entry')).map(n => Object.assign({}, n)));
   if (method === 'POST') { const n = {id: ++fakeId, ts: Date.now(), entry: body.entry, text: body.text, edited: null}; FAKE.unshift(n); return Promise.resolve(Object.assign({}, n)); }
   const n = FAKE.find(x => x.id === id);
@@ -600,6 +638,7 @@ function notesPanel(opt){
         const d = await api('GET', '/notes', null, k);
         store.set(KEY, k);
         updateNav();
+        if (activeEntry) activeEntry.refresh();
         // GET /notes returns every entry; an entry page reloads with ?entry=.
         if (opt.entry) loaded = false; else { notes = asList(d); loaded = true; }
         unlockedView();
@@ -762,6 +801,7 @@ navKey.addEventListener('click', () => {
     if (!confirm('Forget the key on this device? Notes stay safe on the server.')) return;
     store.del(KEY); updateNav();
     if (activePanel) activePanel.relock();
+    if (activeEntry) activeEntry.refresh();
     return;
   }
   if (activePanel && activePanel.focusKey()) return;
@@ -802,30 +842,191 @@ function viewIndex(){
   return 'Notepad';
 }
 
+/* Entry: the .md is the original; once edited, the latest saved version
+   (kept by the worker, behind the key) is what shows, copies and edits. */
+let activeEntry = null;
+
 function viewEntry(e){
-  let src = null, rendered = null;
+  const me = {};
+  const st = {orig: null, text: null, base: 0, ts: null, editable: false, r: null, open: null};
+  const draftKey = 'cnp.edit.' + e.slug;
   const article = h('article', {class: 'md grid', 'aria-label': e.title}, h('p', {class: 'loading', text: 'Loading'}));
-  const copyAll = word('Copy all', () => copyWith(copyAll, () => src));
-  const copyTxt = word('Copy as text', () => copyWith(copyTxt, () => rendered && rendered.text));
-  const raw = h('a', {class: 'w', href: e.file, target: '_blank', rel: 'noopener'}, 'Raw');
+  const state = h('p', {class: 'state', role: 'status', 'aria-live': 'polite'});
+  const hist = h('div', {class: 'hist grid', hidden: true});
+  const acts = h('div', {class: 'right'});
+  const copyAll = word('Copy all', () => copyWith(copyAll, () => st.text));
+  const copyTxt = word('Copy as text', () => copyWith(copyTxt, () => st.r && st.r.text));
+  const editAll = word('Edit all', () => openEditor(-1));
+  const histW = word('History', toggleHistory, {'aria-expanded': 'false'});
+  const raw = () => h('a', {class: 'w', href: e.file, target: '_blank', rel: 'noopener'}, 'Raw');
   const hero = h('header', {class: 'hero grid'},
     h('h1', {class: 'title', tabindex: '-1', text: e.title}),
     h('p', {class: 'when'}, h('time', {datetime: e.date, text: fmtDate(e.date)})),
     h('p', {class: 'blurb', text: e.blurb}),
-    h('div', {class: 'right'}, copyAll, copyTxt, raw));
+    acts, state);
+
+  const readDraft = () => { try { return SHOT ? null : JSON.parse(store.get(draftKey)); } catch (x) { return null; } };
+  const writeDraft = d => { if (!SHOT) store.set(draftKey, JSON.stringify(d)); };
+  const clearDraft = () => store.del(draftKey);
+  const firstLine = t => t.split('\n')[0];
+  const partOf = id => id === '#all' ? -1 : st.r.parts.findIndex((p, k) => k > 0 && firstLine(p) === id);
+
   article.addEventListener('click', ev => {
-    const b = ev.target.closest('button[data-sec]');
-    if (b && rendered) copyWith(b, () => rendered.sections[+b.dataset.sec]);
+    const b = ev.target.closest('button[data-sec],button[data-edit]');
+    if (!b || !st.r) return;
+    if (b.dataset.edit) openEditor(+b.dataset.edit);
+    else copyWith(b, () => st.r.sections[+b.dataset.sec]);
   });
+
+  async function load(){
+    let md;
+    try {
+      const r = await fetch(e.file, {cache: 'no-cache'});
+      if (!r.ok) throw new Error(r.status);
+      md = await r.text();
+    } catch (x) {
+      if (activeEntry !== me) return;
+      article.replaceChildren(h('p', {}, 'Could not load this entry. ', h('a', {href: e.file, text: 'Open the raw file'}), '.'));
+      return;
+    }
+    let d = null, why = getKey() ? '' : 'locked';
+    if (!why) {
+      try { d = await api('GET', '/doc?entry=' + e.slug); }
+      catch (x) { why = x.status === 401 ? 'locked' : 'failed'; }
+    }
+    if (activeEntry !== me) return;
+    st.orig = md; st.editable = !why;
+    st.text = d ? d.text : md; st.base = d ? d.id : 0; st.ts = d ? d.ts : null;
+    draw(why);
+    if (SHOT === 'edit') openEditor(2);
+    if (SHOT === 'history' && !FAKE_DOCS.length) {
+      await api('PUT', '/doc?entry=' + e.slug, {text: md, base: 0});
+      await api('PUT', '/doc?entry=' + e.slug, {text: md, base: 1});
+      await load(); toggleHistory();
+    }
+  }
+
+  function draw(why){
+    st.r = renderMd(st.text, st.editable); st.open = null;
+    article.innerHTML = st.r.html;
+    acts.replaceChildren(...(st.editable ? [copyAll, copyTxt, editAll, histW] : [copyAll, copyTxt, raw()]));
+    if (!st.editable) { hist.hidden = true; histW.setAttribute('aria-expanded', 'false'); }
+    const bits = [];
+    if (why === 'locked') bits.push('Unlock to edit this page.');
+    else if (why === 'failed') bits.push('Could not load your edits, so this is the original and editing is off.', word('Retry', load));
+    else if (st.ts) bits.push('Your edited version, saved ' + fmtTime(st.ts) + '.');
+    const dr = st.editable && readDraft();
+    if (dr && dr.text) {
+      const k = partOf(dr.id);
+      bits.push('You have an unsaved edit' + (dr.id === '#all' ? '' : ' to ' + dr.id.replace(/^#+\s*/, '')) + '.');
+      if (k > -1 || dr.id === '#all') bits.push(word('Resume', () => openEditor(k)));
+      else bits.push(word('Copy it', function(){ copyWith(this, () => dr.text); }));
+      bits.push(word('Discard', () => { if (confirm('Discard the unsaved edit?')) { clearDraft(); draw(); } }));
+    }
+    state.replaceChildren(...bits.map(b => typeof b === 'string' ? h('span', {text: b}) : b));
+  }
+
+  function openEditor(k){
+    if (!st.editable || !st.r) return;
+    if (st.open) {
+      if (st.open.dirty() && !confirm('Discard the edit you have open?')) return;
+      draw();
+    }
+    const orig = k < 0 ? st.text : st.r.parts[k];
+    const body = orig.replace(/\s+$/, '');
+    const trail = k < 0 ? '\n' : (orig.slice(body.length) || '\n\n');
+    const id = k < 0 ? '#all' : firstLine(orig);
+    const dr = readDraft();
+    const ta = h('textarea', {class: 'field', 'aria-label': k < 0 ? 'Edit the whole page (markdown)' : 'Edit section (markdown)', autocapitalize: 'sentences'});
+    ta.value = dr && dr.id === id ? dr.text : body;
+    const msg = h('p', {class: 'small', role: 'status'});
+    if (dr && dr.id === id && dr.text !== body) msg.textContent = 'Restored your unsaved edit.';
+    const sv = word('Save', save, {title: 'Save (Cmd or Ctrl + Enter)'});
+    const cancel = word('Cancel', () => {
+      if (ta.value !== body && !confirm('Discard your changes?')) return;
+      clearDraft(); draw(); focusEdit(k);
+    });
+    const label = h('p', {class: 'elabel', text: (k < 0 ? 'Editing the whole page' : 'Editing this section') + ', in markdown: ## heading, **bold**, *italic*, - list, | table |'});
+    const ed = h('div', {class: 'ed'}, label, ta, h('div', {class: 'acts'}, sv, cancel), msg);
+    ta.addEventListener('input', () => { grow(ta); ta.value === body ? clearDraft() : writeDraft({id, text: ta.value}); });
+    ta.addEventListener('keydown', ev => {
+      if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) { ev.preventDefault(); save(); }
+      if (ev.key === 'Escape') { ev.preventDefault(); cancel.click(); }
+    });
+    if (k < 0) article.replaceChildren(ed);
+    else article.querySelector('[data-part="' + k + '"]').replaceChildren(ed);
+    st.open = {dirty: () => ta.value !== body};
+    grow(ta);
+    if (!SHOT) { ta.focus({preventScroll: true}); ed.scrollIntoView({block: 'start'}); }
+
+    async function save(){
+      const v = ta.value.replace(/\s+$/, '');
+      if (k < 0 && !v.trim()) { msg.textContent = 'The page cannot be empty.'; return; }
+      if (k >= 0 && !v.trim() && !confirm('Remove this whole section?')) return;
+      let next;
+      if (k < 0) next = v + '\n';
+      else { const parts = st.r.parts.slice(); parts[k] = v ? v + trail : ''; next = parts.join(''); }
+      if (!next.trim()) { msg.textContent = 'The page cannot be empty.'; return; }
+      if (next.length > MAXDOC) { msg.textContent = 'That is too long (200000 characters max).'; return; }
+      if (next === st.text) { clearDraft(); draw(); focusEdit(k); return; }
+      sv.disabled = true; sv.textContent = 'Saving'; msg.textContent = '';
+      try {
+        const d = await api('PUT', '/doc?entry=' + e.slug, {text: next, base: st.base});
+        st.text = d.text; st.base = d.id; st.ts = d.ts;
+        clearDraft(); draw(); focusEdit(k);
+        if (!hist.hidden) loadHistory();
+      } catch (x) {
+        sv.disabled = false; sv.textContent = 'Save';
+        const kept = ' Your edit is kept on this device.';
+        if (x.status === 409) msg.replaceChildren('This page changed on another device.' + kept + ' ', word('Load latest', load));
+        else if (x.status === 401) msg.textContent = 'That key did not work.' + kept;
+        else if (x.status === 0) msg.textContent = 'Could not reach the server.' + kept;
+        else msg.textContent = 'The server refused that (' + x.message + ').' + kept;
+      }
+    }
+  }
+  function focusEdit(k){
+    const b = k < 0 ? editAll : article.querySelector('[data-edit="' + k + '"]');
+    if (b && b.isConnected) { if (!SHOT) b.scrollIntoView({block: 'center'}); b.focus({preventScroll: true}); }
+  }
+
+  async function toggleHistory(){
+    const open = hist.hidden;
+    hist.hidden = !open; histW.setAttribute('aria-expanded', String(open));
+    if (open) loadHistory();
+  }
+  async function loadHistory(){
+    hist.replaceChildren(h('p', {class: 'hrow', text: 'Loading versions'}));
+    let v;
+    try { v = await api('GET', '/doc/versions?entry=' + e.slug); }
+    catch (x) { hist.replaceChildren(h('p', {class: 'hrow'}, 'Could not load the history. ', word('Retry', loadHistory))); return; }
+    const row = (when, size, id) => h('div', {class: 'hrow'}, h('span', {text: when}), h('span', {class: 'n', text: size}),
+      id === st.base ? h('em', {text: 'showing'}) : word('Restore', () => restore(id), {'aria-label': 'Restore the version from ' + when}));
+    const chars = n => n.toLocaleString('en-IN') + ' characters';
+    hist.replaceChildren(
+      ...v.map(x => row(fmtTime(x.ts), chars(x.len), x.id)),
+      h('div', {class: 'hrow'}, h('span', {text: 'Original'}), h('span', {class: 'n', text: chars(st.orig.length)}),
+        st.base === 0 ? h('em', {text: 'showing'}) : word('Restore', () => restore(0), {'aria-label': 'Restore the original'}), raw()),
+      h('p', {class: 'hrow n', text: v.length ? 'The last 100 saves are kept. Restoring saves a new version, so nothing is lost.' : 'No edits yet.'}));
+  }
+  async function restore(id){
+    if (!confirm('Show this version again? The current one stays in History.')) return;
+    try {
+      const text = id ? (await api('GET', '/doc?entry=' + e.slug + '&id=' + id)).text : st.orig;
+      const d = await api('PUT', '/doc?entry=' + e.slug, {text, base: st.base});
+      st.text = d.text; st.base = d.id; st.ts = d.ts;
+      draw(); loadHistory();
+    } catch (x) {
+      hist.prepend(h('p', {class: 'hrow', role: 'alert', text: x.status === 409 ? 'This page changed on another device. Reload, then try again.' : 'Could not restore that version (' + (x.status || 'offline') + ').'}));
+    }
+  }
+
+  me.refresh = load;
+  activeEntry = me;
   main.className = 'entry';
-  main.replaceChildren(hero, article, notesPanel({entry: e.slug, composeTo: e.slug, heading: true}).root);
+  main.replaceChildren(hero, hist, article, notesPanel({entry: e.slug, composeTo: e.slug, heading: true}).root);
   footer([h('a', {class: 'w', href: '#/', text: 'Index'}), toTop()]);
-  fetch(e.file, {cache: 'no-cache'}).then(r => { if (!r.ok) throw new Error(r.status); return r.text(); }).then(t => {
-    src = t; rendered = renderMd(t);
-    article.innerHTML = rendered.html;
-  }).catch(() => {
-    article.replaceChildren(h('p', {}, 'Could not load this entry. ', h('a', {href: e.file, text: 'Open the raw file'}), '.'));
-  });
+  load();
   return e.title + ' · Notepad';
 }
 
@@ -844,7 +1045,7 @@ function viewNotes(){
 }
 
 function route(){
-  if (SHOT && !route.done) return {v: SHOT, e: ENTRIES[0]};
+  if (SHOT && !route.done) return {v: SHOT === 'index' || SHOT === 'notes' ? SHOT : 'entry', e: ENTRIES[0]};
   const p = location.hash.replace(/^#\/?/, '').split(/[&?]/)[0];
   if (p === 'notes') return {v: 'notes'};
   const e = ENTRIES.find(x => x.slug === p);
@@ -852,7 +1053,7 @@ function route(){
 }
 function render(){
   const r = route(); route.done = true;
-  activePanel = null;
+  activePanel = null; activeEntry = null;
   document.title = r.v === 'entry' ? viewEntry(r.e) : r.v === 'notes' ? viewNotes() : viewIndex();
   if (r.v === 'notes') navNotes.setAttribute('aria-current', 'page'); else navNotes.removeAttribute('aria-current');
   main.querySelectorAll('textarea').forEach(grow);

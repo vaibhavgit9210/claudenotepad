@@ -10,7 +10,17 @@ The design follows mayicestudio.com: a #f5f5f5 ground, black ink, one regular-we
 
 The repo is **public**, so every entry in `notes/` is public too. Don't put anything private in an entry.
 
-Notes are different. They never touch the repo: they live in the `claudenotepad` Cloudflare Worker (a SQLite Durable Object) and every request needs the key. Without the key the page shows "Notes are locked on this device."
+Notes and edits are different. They never touch the repo: they live in the `claudenotepad` Cloudflare Worker (a SQLite Durable Object) and every request needs the key. Without the key the page shows "Notes are locked on this device."
+
+## Editing an entry
+
+Once the page is unlocked, every section has an **Edit** word next to its **Copy** word, and the header has **Edit all** and **History**. Edit turns that section into its markdown source in place. Save with the Save word or Cmd/Ctrl+Enter, and leave with Cancel or Esc. Saving an empty section removes it.
+
+- **Where edits live:** in the worker, not the repo. Each save stores the whole page as a new version (`docs` table, last 100 per entry). Once a page has been edited, the latest version is what shows, copies and edits on every unlocked device. Locked devices and the public see the original `notes/<slug>.md`.
+- **History:** lists the saved versions plus the original file. Restore saves a chosen version again as the newest one, so restoring never loses anything.
+- **Two devices:** every save says which version it started from. If another device saved in between, the worker answers 409, the editor stays open, and "Load latest" shows the other device's version.
+- **Unsaved text is never lost:** an open edit autosaves to `localStorage` (`cnp.edit.<slug>`). After a reload or a conflict, the page offers Resume or Discard.
+- **Editing the .md file itself** (in the repo) changes the original, but an entry that has edits keeps showing its latest edited version. To pick up a new .md, use History, then Restore on "Original".
 
 ## Layout
 
@@ -50,7 +60,7 @@ On an entry: "Copy all" copies the .md exactly, "Copy as text" copies it without
 - Drafts autosave to `localStorage` (`cnp.draft.<slug>`) on every keystroke and are cleared only after the server confirms the save. Cmd or Ctrl + Enter saves.
 - The key itself is never in this repo. It is the worker secret `NOTE_KEY`.
 
-Worker API (all requests need `Authorization: Bearer <key>`): `GET /notes`, `GET /notes?entry=<slug>`, `POST /notes {entry, text}`, `PUT /notes?id=N {text}`, `DELETE /notes?id=N`. See the header of `worker/worker.js`.
+Worker API (all requests need `Authorization: Bearer <key>`): `GET /notes`, `GET /notes?entry=<slug>`, `POST /notes {entry, text}`, `PUT /notes?id=N {text}`, `DELETE /notes?id=N`, plus edits: `GET /doc?entry=<slug>[&id=N]`, `GET /doc/versions?entry=<slug>`, `PUT /doc?entry=<slug> {text, base}`. See the header of `worker/worker.js`.
 
 ## Local dev
 
@@ -65,7 +75,7 @@ open "http://localhost:8765/?api=http://localhost:8787#/trivia-night"
 
 `?api=` is honoured only when the page itself is on `localhost` or `127.0.0.1` and the override points at `localhost` or `127.0.0.1`, so a crafted link can't send the key anywhere else.
 
-Screenshot hooks (fake notes, no API calls): `#shot=index`, `#shot=entry`, `#shot=notes`. Headless Chrome on macOS won't render narrower than about 500px, so check phone widths with device emulation over the DevTools protocol rather than `--window-size=390,...`.
+Screenshot hooks (fake notes, no API calls): `#shot=index`, `#shot=entry`, `#shot=edit` (a section open in the editor), `#shot=history` (two fake saves, History open), `#shot=notes`. Headless Chrome on macOS won't render narrower than about 500px, so check phone widths with device emulation over the DevTools protocol rather than `--window-size=390,...`.
 
 ## Deploy
 
