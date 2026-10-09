@@ -1,0 +1,15 @@
+name = "claudenotepad"
+main = "worker.js"
+compatibility_date = "2026-07-01"
+
+[[durable_objects.bindings]]
+name = "NOTEBOOK"
+class_name = "Notebook"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Notebook"]
+
+# Secret (set via `npx wrangler secret put NOTE_KEY`, never in this file):
+#   NOTE_KEY  bearer key for every request. Unset means every request gets 500.
+# Local dev reads it from .dev.vars (gitignored).
