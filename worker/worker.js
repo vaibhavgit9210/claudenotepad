@@ -15,6 +15,18 @@
 // PUT    /doc?entry=slug           {text, base} -> 200 new version. base = id the edit
 //                                  started from (0 = the original .md); 409 if stale.
 //
+// The terminal feed (the CLI-style page): messages plus comments anchored to text in them.
+// GET    /feed[?rev=N]       {rev, msgs:[{id, ts, kind, text, edited}], comments:[{id, ts, msg,
+//                            start, end, quote, text, edited}]}, oldest first; {rev, same:true}
+//                            when rev is already current (cheap polling).
+// POST   /msg               {kind: user|claude|note, text} -> 201 msg
+// PUT    /msg?id=N          {text} -> 200 msg
+// DELETE /msg?id=N          -> {ok:true}, also deletes its comments
+// POST   /comment           {msg, start, end, quote, text} -> 201 comment. start/end are
+//                            offsets into the message's rendered text, quote the text there.
+// PUT    /comment?id=N      {text} -> 200 comment
+// DELETE /comment?id=N      -> {ok:true}
+//
 // entry: /^[a-z0-9-]{1,40}$/ ("inbox" = general bucket). text: 1 to 20000 chars
 // after cleaning (docs 200000). 5000 notes max. ts/edited are ms epoch ints,
 // edited null if never.
@@ -29,6 +41,7 @@ const LOCAL = /^http:\/\/(localhost|127\.0\.0\.1)(:\d{1,5})?$/;
 const SLUG = /^[a-z0-9-]{1,40}$/;
 const MAX_BODY = 64 * 1024, MAX_TEXT = 20000, MAX_NOTES = 5000;
 const MAX_DOC_BODY = 1024 * 1024, MAX_DOC = 200000, KEEP_VERSIONS = 100;
+const KINDS = ['user', 'claude', 'note'], MAX_MSG = 100000, MAX_ROWS = 5000;
 
 function corsHeaders(req) {
   const origin = req.headers.get('Origin') || '';
@@ -74,6 +87,59 @@ export class Notebook extends DurableObject {
     this.sql.exec(`CREATE TABLE IF NOT EXISTS docs(
       id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, entry TEXT, text TEXT)`);
     this.sql.exec('CREATE INDEX IF NOT EXISTS idx_docs_entry ON docs(entry, id)');
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS msgs(
+      id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, edited INTEGER, kind TEXT, text TEXT)`);
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS comments(
+      id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, edited INTEGER, msg INTEGER,
+      start INTEGER, end INTEGER, quote TEXT, text TEXT)`);
+    this.sql.exec('CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v INTEGER)');
+  }
+  rev() {
+    return (this.sql.exec("SELECT v FROM meta WHERE k = 'rev'").toArray()[0] || { v: 0 }).v;
+  }
+  bump() {
+    this.sql.exec("INSERT INTO meta(k, v) VALUES('rev', 1) ON CONFLICT(k) DO UPDATE SET v = v + 1");
+  }
+  feed(rev) {
+    const now = this.rev();
+    if (rev === now) return { rev: now, same: true };
+    return {
+      rev: now,
+      msgs: this.sql.exec('SELECT id, ts, kind, text, edited FROM msgs ORDER BY id').toArray(),
+      comments: this.sql.exec('SELECT id, ts, msg, start, end, quote, text, edited FROM comments ORDER BY id').toArray(),
+    };
+  }
+  msg(id) {
+    return this.sql.exec('SELECT id, ts, kind, text, edited FROM msgs WHERE id = ?', id).toArray()[0] || null;
+  }
+  comment(id) {
+    return this.sql.exec('SELECT id, ts, msg, start, end, quote, text, edited FROM comments WHERE id = ?', id).toArray()[0] || null;
+  }
+  addMsg(kind, text) {
+    if (this.sql.exec('SELECT COUNT(*) c FROM msgs').one().c >= MAX_ROWS) return null;
+    const id = this.sql.exec('INSERT INTO msgs(ts, edited, kind, text) VALUES(?, NULL, ?, ?) RETURNING id',
+      Date.now(), kind, text).one().id;
+    this.bump();
+    return this.msg(id);
+  }
+  addComment(c) {
+    if (!this.msg(c.msg) || this.sql.exec('SELECT COUNT(*) c FROM comments').one().c >= MAX_ROWS) return null;
+    const id = this.sql.exec(`INSERT INTO comments(ts, edited, msg, start, end, quote, text)
+      VALUES(?, NULL, ?, ?, ?, ?, ?) RETURNING id`, Date.now(), c.msg, c.start, c.end, c.quote, c.text).one().id;
+    this.bump();
+    return this.comment(id);
+  }
+  editRow(table, id, text) {
+    this.sql.exec(`UPDATE ${table} SET text = ?, edited = ? WHERE id = ?`, text, Date.now(), id);
+    this.bump();
+    return table === 'msgs' ? this.msg(id) : this.comment(id);
+  }
+  removeRow(table, id) {
+    if (!(table === 'msgs' ? this.msg(id) : this.comment(id))) return false;
+    if (table === 'msgs') this.sql.exec('DELETE FROM comments WHERE msg = ?', id);
+    this.sql.exec(`DELETE FROM ${table} WHERE id = ?`, id);
+    this.bump();
+    return true;
   }
   doc(entry, id) {
     const cols = 'SELECT id, ts, entry, text FROM docs WHERE entry = ?';
@@ -150,6 +216,50 @@ async function docRoute(req, url, nb, json) {
   return r.conflict !== undefined ? json({ error: 'conflict', latest: r.conflict }, 409) : json(r);
 }
 
+async function feedRoute(req, url, nb, json) {
+  if (url.pathname === '/feed') {
+    if (req.method !== 'GET') return json({ error: 'method not allowed' }, 405);
+    const r = url.searchParams.get('rev');
+    return json(await nb.feed(r !== null && /^\d{1,15}$/.test(r) ? Number(r) : -1));
+  }
+  const table = url.pathname === '/msg' ? 'msgs' : 'comments';
+  if (req.method !== 'POST' && req.method !== 'PUT' && req.method !== 'DELETE')
+    return json({ error: 'method not allowed' }, 405);
+  let id = null;
+  if (req.method !== 'POST') {
+    if (!/^[1-9]\d{0,15}$/.test(url.searchParams.get('id') || '')) return json({ error: 'bad id' }, 400);
+    id = Number(url.searchParams.get('id'));
+  }
+  if (req.method === 'DELETE')
+    return (await nb.removeRow(table, id)) ? json({ ok: true }) : json({ error: 'not found' }, 404);
+
+  const max = table === 'msgs' ? MAX_MSG : MAX_TEXT;
+  if (Number(req.headers.get('Content-Length') || 0) > max * 4 + 4096) return json({ error: 'too large' }, 413);
+  const raw = await req.text();
+  if (new TextEncoder().encode(raw).length > max * 4 + 4096) return json({ error: 'too large' }, 413);
+  let body;
+  try { body = JSON.parse(raw); } catch { return json({ error: 'bad json' }, 400); }
+  if (!body || typeof body !== 'object' || typeof body.text !== 'string') return json({ error: 'bad text' }, 400);
+  const text = clean(body.text.replace(/\r\n?/g, '\n'));
+  if (text.length < 1 || text.length > max) return json({ error: 'bad text' }, 400);
+
+  if (req.method === 'PUT') {
+    const row = await nb.editRow(table, id, text);
+    return row ? json(row) : json({ error: 'not found' }, 404);
+  }
+  if (table === 'msgs') {
+    if (!KINDS.includes(body.kind)) return json({ error: 'bad kind' }, 400);
+    const m = await nb.addMsg(body.kind, text);
+    return m ? json(m, 201) : json({ error: 'feed full' }, 429);
+  }
+  const ok = n => Number.isSafeInteger(n) && n >= 0;
+  if (!ok(body.msg) || !ok(body.start) || !ok(body.end) || body.end <= body.start || body.end - body.start > MAX_MSG
+      || typeof body.quote !== 'string' || body.quote.length !== body.end - body.start)
+    return json({ error: 'bad anchor' }, 400);
+  const c = await nb.addComment({ msg: body.msg, start: body.start, end: body.end, quote: body.quote, text });
+  return c ? json(c, 201) : json({ error: 'no such msg, or full' }, 404);
+}
+
 export default {
   async fetch(req, env) {
     const cors = corsHeaders(req);
@@ -163,6 +273,8 @@ export default {
     const url = new URL(req.url);
     const nb = env.NOTEBOOK.get(env.NOTEBOOK.idFromName('main'));
     if (url.pathname === '/doc' || url.pathname === '/doc/versions') return docRoute(req, url, nb, json);
+    if (url.pathname === '/feed' || url.pathname === '/msg' || url.pathname === '/comment')
+      return feedRoute(req, url, nb, json);
     if (url.pathname !== '/notes') return json({ error: 'not found' }, 404);
 
     if (req.method === 'GET') {

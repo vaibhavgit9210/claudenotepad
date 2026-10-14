@@ -1,0 +1,100 @@
+#!/usr/bin/env python3
+"""cnp: drive the claudenotepad terminal page from a shell (i.e. from a Claude Code session).
+
+  cnp feed                  print every message with its id, plus comments under each
+  cnp new [REV]             same, but exits quietly if nothing changed since REV (printed by feed)
+  cnp user  [TEXT|-]        post a "> prompt" line          (- or no TEXT = read stdin)
+  cnp claude [TEXT|-]       post a Claude response (markdown)
+  cnp note  [TEXT|-]        post a note, as if typed in the page's input box
+  cnp edit ID [TEXT|-]      replace a message's text
+  cnp rm ID                 delete a message (and its comments)
+  cnp reply CID [TEXT|-]    replace a comment's text
+  cnp rmc CID               delete a comment
+
+Key: CNP_KEY env var, else the gitignored .note-key next to this script.
+API: CNP_API env var, else the live worker.
+"""
+import json, os, sys, urllib.request, urllib.error
+from datetime import datetime
+
+API = os.environ.get('CNP_API', 'https://claudenotepad.vaibhavpro9210.workers.dev')
+HERE = os.path.dirname(os.path.realpath(__file__))
+
+
+def key():
+    k = os.environ.get('CNP_KEY')
+    if k:
+        return k.strip()
+    with open(os.path.join(HERE, '.note-key')) as f:
+        return f.read().strip()
+
+
+def call(method, path, body=None):
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(API + path, data=data, method=method, headers={
+        'Authorization': 'Bearer ' + key(), 'Content-Type': 'application/json',
+        'User-Agent': 'cnp/1'})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return json.loads(r.read() or b'null')
+    except urllib.error.HTTPError as e:
+        sys.exit(f'cnp: {method} {path} -> {e.code} {e.read().decode(errors="replace")}')
+
+
+def text_arg(args):
+    if not args or args == ['-']:
+        return sys.stdin.read()
+    return ' '.join(args)
+
+
+def when(ms):
+    return datetime.fromtimestamp(ms / 1000).strftime('%d %b %H:%M')
+
+
+def show(feed):
+    by = {}
+    for c in feed['comments']:
+        by.setdefault(c['msg'], []).append(c)
+    for m in feed['msgs']:
+        ed = f' (edited {when(m["edited"])})' if m['edited'] else ''
+        print(f'--- #{m["id"]} {m["kind"]} {when(m["ts"])}{ed}')
+        print(m['text'])
+        for c in by.get(m['id'], []):
+            q = c['quote'].replace('\n', ' ')
+            print(f'    [comment c{c["id"]} on "{q}"]: {c["text"]}')
+        print()
+    print(f'rev {feed["rev"]}')
+
+
+def main(a):
+    if not a or a[0] in ('-h', '--help', 'help'):
+        print(__doc__.strip())
+        return
+    cmd, rest = a[0], a[1:]
+    if cmd == 'feed':
+        show(call('GET', '/feed'))
+    elif cmd == 'new':
+        f = call('GET', '/feed?rev=' + (rest[0] if rest else '-1'))
+        if not f.get('same'):
+            show(f)
+    elif cmd in ('user', 'claude', 'note'):
+        m = call('POST', '/msg', {'kind': cmd, 'text': text_arg(rest)})
+        print(f'posted #{m["id"]}')
+    elif cmd == 'edit':
+        call('PUT', f'/msg?id={int(rest[0])}', {'text': text_arg(rest[1:])})
+        print('ok')
+    elif cmd == 'rm':
+        call('DELETE', f'/msg?id={int(rest[0])}')
+        print('ok')
+    elif cmd == 'reply':
+        call('PUT', f'/comment?id={int(rest[0].lstrip("c"))}', {'text': text_arg(rest[1:])})
+        print('ok')
+    elif cmd == 'rmc':
+        call('DELETE', f'/comment?id={int(rest[0].lstrip("c"))}')
+        print('ok')
+    else:
+        sys.exit(f'cnp: unknown command {cmd!r} (try cnp help)')
+
+
+if __name__ == '__main__':
+    main(sys.argv[1:])
