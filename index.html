@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="robots" content="noindex">
 <meta name="theme-color" content="#141413">
+<meta name="color-scheme" content="dark">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'self' https://claudenotepad.vaibhavpro9210.workers.dev https://site-analytics.vaibhavpro9210.workers.dev http://localhost:* http://127.0.0.1:*; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>claudenotepad</title>
@@ -13,15 +14,20 @@
   --bg:#141413; --fg:#e8e6dc; --dim:#8b8a85; --faint:#55544f; --acc:#d97757;
   --code:#b1b9f9; --ubg:#262624; --line:#3d3d3a; --ok:#78c38a; --err:#e06c6c;
   --mark:rgba(217,119,87,.16);
+  /* glass (macOS 26+), only on what floats: the prompt box and the comment popover */
+  --blur:blur(24px) saturate(170%);
+  --rim:inset 0 .5px 0 rgba(255,255,255,.14);
+  --drop:0 10px 30px rgba(0,0,0,.34),0 1px 3px rgba(0,0,0,.24);
+  color-scheme:dark;
 }
 *{box-sizing:border-box}
 html,body{margin:0;background:var(--bg);color:var(--fg)}
 body{font:14px/1.6 ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
-  -webkit-text-size-adjust:100%}
+  -webkit-text-size-adjust:100%;-webkit-font-smoothing:antialiased;-webkit-tap-highlight-color:transparent}
 ::selection{background:#5a4436}
 a{color:var(--fg);text-decoration:underline;text-decoration-color:var(--faint);text-underline-offset:2px}
 a:hover{text-decoration-color:var(--fg)}
-.wrap{max-width:980px;margin:0 auto;padding:18px 18px 0}
+.wrap{max-width:980px;margin:0 auto;padding:max(18px,env(safe-area-inset-top)) max(18px,env(safe-area-inset-right)) 0 max(18px,env(safe-area-inset-left))}
 
 /* welcome box, like the Claude Code banner */
 .welcome{border:1px solid var(--acc);border-radius:8px;padding:10px 14px;margin-bottom:22px}
@@ -67,26 +73,32 @@ a:hover{text-decoration-color:var(--fg)}
 mark{background:var(--mark);color:inherit;border-bottom:1px dotted var(--acc);cursor:help}
 mark.on{background:rgba(217,119,87,.32)}
 .orph{color:var(--dim);padding-left:2ch;font-size:13px}
-.pop{position:fixed;z-index:30;max-width:min(420px,calc(100vw - 20px));background:#1f1f1d;
-  border:1px solid var(--acc);border-radius:8px;padding:8px 10px;box-shadow:0 8px 28px rgba(0,0,0,.5);font-size:13px}
+.pop{position:fixed;z-index:30;max-width:min(420px,calc(100vw - 20px));background:rgba(31,31,29,.86);
+  -webkit-backdrop-filter:var(--blur);backdrop-filter:var(--blur);
+  border:1px solid var(--acc);border-radius:12px;padding:8px 11px;box-shadow:var(--rim),0 14px 40px rgba(0,0,0,.5);font-size:13px}
 .pop .txt{white-space:pre-wrap;word-break:break-word}
 .pop .meta{color:var(--dim);margin-top:6px;font-size:12px}
 .pop .q{color:var(--dim);font-size:12px;margin-bottom:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.pop textarea{width:min(380px,calc(100vw - 44px));min-height:4.8em;resize:vertical;background:var(--bg);color:var(--fg);
-  border:1px solid var(--line);border-radius:4px;font:inherit;padding:6px 8px;outline:none}
+.pop textarea{width:min(380px,calc(100vw - 44px));min-height:4.8em;resize:vertical;background:rgba(20,20,19,.7);color:var(--fg);
+  border:1px solid var(--line);border-radius:8px;font:inherit;padding:6px 8px;outline:none}
 .pop textarea:focus{border-color:var(--dim)}
 .lk{color:var(--fg);cursor:pointer;text-decoration:underline;text-decoration-color:var(--faint);text-underline-offset:2px;
   background:none;border:0;padding:0;font:inherit}
 .lk:hover{text-decoration-color:var(--fg)}
+.lk:focus-visible,#addc:focus-visible{outline:1px solid var(--acc);outline-offset:2px}
 .lk.err{color:var(--err)}
-#addc{position:absolute;z-index:25;background:var(--acc);color:#141413;border:0;border-radius:5px;padding:3px 9px;
-  font:600 12px/1.4 ui-monospace,Menlo,monospace;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.45)}
+#addc{position:absolute;z-index:25;background:var(--acc);color:#141413;border:0;border-radius:999px;padding:3px 11px;
+  font:600 12px/1.4 ui-monospace,Menlo,monospace;cursor:pointer;
+  box-shadow:inset 0 .5px 0 rgba(255,255,255,.45),0 4px 14px rgba(217,119,87,.3),0 2px 6px rgba(0,0,0,.4)}
 
-/* bottom input, like the CLI prompt box */
-.dock{position:fixed;left:0;right:0;bottom:0;background:var(--bg);z-index:20;
-  padding:8px 0 calc(8px + env(safe-area-inset-bottom))}
-.dock .in{max-width:980px;margin:0 auto;padding:0 18px}
-.box{display:flex;border:1px solid var(--line);border-radius:8px;padding:7px 12px}
+/* bottom input, like the CLI prompt box: it floats on glass, and the feed fades out behind it */
+.dock{position:fixed;left:0;right:0;bottom:0;z-index:20;
+  background:linear-gradient(rgba(20,20,19,0),rgba(20,20,19,.86) 45%,var(--bg) 75%);
+  padding:20px 0 calc(8px + env(safe-area-inset-bottom))}
+.dock .in{max-width:980px;margin:0 auto;padding:0 max(18px,env(safe-area-inset-right)) 0 max(18px,env(safe-area-inset-left))}
+.box{display:flex;border:1px solid var(--line);border-radius:12px;padding:7px 12px;
+  background:rgba(38,38,36,.6);-webkit-backdrop-filter:var(--blur);backdrop-filter:var(--blur);
+  box-shadow:var(--rim),var(--drop);transition:border-color .15s}
 .box:focus-within{border-color:var(--dim)}
 .box .p{color:var(--fg);flex:0 0 2ch}
 .box textarea{flex:1;background:transparent;border:0;outline:none;color:var(--fg);font:inherit;resize:none;
@@ -101,10 +113,16 @@ mark.on{background:rgba(217,119,87,.32)}
 @media (max-width:600px){
   body{font-size:13px}
   .wrap{padding:12px 12px 0}
-  .dock .in{padding:0 10px}
+  .dock .in{padding:0 max(10px,env(safe-area-inset-right)) 0 max(10px,env(safe-area-inset-left))}
   .box textarea{font-size:16px}
+  .box .p{font-size:16px} /* keeps the > on the same line as the 16px text */
   .hint .long{display:none}
   .m .t{display:none}
+}
+/* Reduce Transparency (System Settings > Accessibility > Display): solid surfaces, no blur */
+@media (prefers-reduced-transparency:reduce){
+  .box{background:#262624;-webkit-backdrop-filter:none;backdrop-filter:none}
+  .pop{background:#1f1f1d;-webkit-backdrop-filter:none;backdrop-filter:none}
 }
 </style>
 </head>
