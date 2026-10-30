@@ -13,7 +13,8 @@ The repo is **public**, but it holds no content. Every message, note and comment
 - **Notes:** type in the bottom box and press Enter. The note is added to the end of the feed. Shift+Enter adds a newline. Unsent text autosaves to `localStorage` (`cnp.draft`).
 - **Comments:** select any text inside one message and a "+ comment" button appears. Enter saves. Hover a highlighted passage to read its comment, with edit and delete (delete asks twice). On touch screens, tap the highlight instead.
 - **Anchors:** a comment stores its message id, start and end offsets into the message's rendered text, and the quoted text. If the message is edited, the comment moves to the nearest copy of its quote. If the quote is gone, it is listed under the message as "comment on text that changed".
-- **Live:** the page polls `/feed?rev=N` every 4 seconds while visible. That costs almost nothing when nothing changed, so a post from Claude Code shows up within seconds.
+- **Tabs:** every message belongs to a tab, `main` unless it was posted elsewhere. Once a second tab exists, a row of tabs appears above the bottom box. Notes typed in the box go to the open tab, and `#tab=<name>` in the address opens that tab directly. A tab exists while it has messages; there is no separate create or delete.
+- **Live:** the page polls `/feed?tab=T&rev=N` every 4 seconds while visible. That costs almost nothing when nothing changed, so a post from Claude Code shows up within seconds.
 - **Key:** when locked, the bottom box asks for the key (masked). `/lock` forgets it on this device. There is also `#k=<key>`, which is stored and then scrubbed from the address bar, but it stays in browser history, so typing the key is better.
 
 ## From Claude Code: `./cnp`
@@ -28,11 +29,13 @@ The repo is **public**, but it holds no content. Every message, note and comment
 ./cnp rm 4                 # delete message 4 and its comments
 ./cnp reply c2 'text'      # replace comment 2's text
 ./cnp rmc c2               # delete comment 2
+./cnp tabs                 # list tabs with their message counts
+./cnp --tab context feed   # feed, new, user, claude and note on another tab (posting creates it)
 ```
 
-The key comes from `CNP_KEY` or the gitignored `.note-key`. Set `CNP_API` to point at a local worker.
+The key comes from `CNP_KEY` or the gitignored `.note-key`. Set `CNP_API` to point at a local worker, and `CNP_TAB` instead of passing `--tab` every time.
 
-Worker API (all requests need `Authorization: Bearer <key>`): `GET /feed[?rev=N]`, `POST /msg {kind: user|claude|note, text}`, `PUT|DELETE /msg?id=N`, `POST /comment {msg, start, end, quote, text}`, `PUT|DELETE /comment?id=N`. The routes from the old reader (`/notes`, `/doc`) are still there, and so is their data. See the header of `worker/worker.js`.
+Worker API (all requests need `Authorization: Bearer <key>`): `GET /feed[?tab=T][&rev=N]` (also lists every tab), `POST /msg {kind: user|claude|note, text, tab?}`, `PUT|DELETE /msg?id=N`, `POST /comment {msg, start, end, quote, text}`, `PUT|DELETE /comment?id=N`. The routes from the old reader (`/notes`, `/doc`) are still there, and so is their data. See the header of `worker/worker.js`.
 
 ## Rendering
 
@@ -51,7 +54,7 @@ open "http://localhost:8765/?api=http://localhost:8787"
 
 `?api=` is honoured only when the page is on localhost and the override also points at localhost.
 
-Screenshot hooks (fake data, no API calls): `#shot=feed`, `#shot=comment` (one comment open), `#shot=locked`. Use `--timeout=4000` with headless Chrome.
+Screenshot hooks (fake data, no API calls): `#shot=feed`, `#shot=comment` (one comment open), `#shot=locked`, `#shot=tabs` (the tab row with two tabs). Use `--timeout=4000` with headless Chrome.
 
 ## Deploy
 

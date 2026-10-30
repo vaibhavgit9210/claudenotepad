@@ -10,15 +10,20 @@
   cnp rm ID                 delete a message (and its comments)
   cnp reply CID [TEXT|-]    replace a comment's text
   cnp rmc CID               delete a comment
+  cnp tabs                  list the tabs and how many messages each holds
+
+  cnp --tab NAME CMD ...    feed, new, user, claude and note work on tab NAME (default main;
+                            posting to a new name creates that tab). Or set CNP_TAB.
 
 Key: CNP_KEY env var, else the gitignored .note-key next to this script.
 API: CNP_API env var, else the live worker.
 """
-import json, os, sys, urllib.request, urllib.error
+import json, os, sys, urllib.parse, urllib.request, urllib.error
 from datetime import datetime
 
 API = os.environ.get('CNP_API', 'https://claudenotepad.vaibhavpro9210.workers.dev')
 HERE = os.path.dirname(os.path.realpath(__file__))
+TAB = os.environ.get('CNP_TAB', 'main')
 
 
 def key():
@@ -52,6 +57,8 @@ def when(ms):
 
 
 def show(feed):
+    if TAB != 'main':
+        print(f'=== tab {TAB}\n')
     by = {}
     for c in feed['comments']:
         by.setdefault(c['msg'], []).append(c)
@@ -67,19 +74,28 @@ def show(feed):
 
 
 def main(a):
+    global TAB
+    while a and a[0] in ('--tab', '-t'):
+        if len(a) < 2:
+            sys.exit('cnp: --tab needs a name')
+        TAB, a = a[1], a[2:]
     if not a or a[0] in ('-h', '--help', 'help'):
         print(__doc__.strip())
         return
     cmd, rest = a[0], a[1:]
+    tab = 'tab=' + urllib.parse.quote(TAB)
     if cmd == 'feed':
-        show(call('GET', '/feed'))
+        show(call('GET', '/feed?' + tab))
     elif cmd == 'new':
-        f = call('GET', '/feed?rev=' + (rest[0] if rest else '-1'))
+        f = call('GET', f'/feed?{tab}&rev=' + (rest[0] if rest else '-1'))
         if not f.get('same'):
             show(f)
+    elif cmd == 'tabs':
+        for t in call('GET', '/feed')['tabs']:
+            print(f'{t["tab"]}  ({t["n"]} messages)')
     elif cmd in ('user', 'claude', 'note'):
-        m = call('POST', '/msg', {'kind': cmd, 'text': text_arg(rest)})
-        print(f'posted #{m["id"]}')
+        m = call('POST', '/msg', {'kind': cmd, 'text': text_arg(rest), 'tab': TAB})
+        print(f'posted #{m["id"]}' + ('' if TAB == 'main' else f' in tab {TAB}'))
     elif cmd == 'edit':
         call('PUT', f'/msg?id={int(rest[0])}', {'text': text_arg(rest[1:])})
         print('ok')

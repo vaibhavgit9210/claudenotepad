@@ -110,6 +110,17 @@ mark.on{background:rgba(217,119,87,.32)}
 .dot.ok{background:var(--ok)} .dot.err{background:var(--err)}
 .sys{color:var(--dim)} .sys.err{color:var(--err)}
 
+/* tabs: glass capsules above the prompt box, shown once there is more than one */
+.tabs{display:flex;gap:6px;overflow-x:auto;padding:0 2px 8px;scrollbar-width:none}
+.tabs[hidden]{display:none}
+.tabs::-webkit-scrollbar{display:none}
+.tab{flex:0 0 auto;border:1px solid var(--line);border-radius:999px;padding:2px 11px;cursor:pointer;
+  background:rgba(38,38,36,.6);-webkit-backdrop-filter:var(--blur);backdrop-filter:var(--blur);box-shadow:var(--rim);
+  color:var(--dim);font:12px/1.5 ui-monospace,"SF Mono",SFMono-Regular,Menlo,monospace}
+.tab:hover{color:var(--fg)}
+.tab[aria-selected="true"]{color:var(--fg);border-color:var(--acc)}
+.tab:focus-visible{outline:1px solid var(--acc);outline-offset:2px}
+
 @media (max-width:600px){
   body{font-size:13px}
   .wrap{padding:12px 12px 0}
@@ -123,6 +134,7 @@ mark.on{background:rgba(217,119,87,.32)}
 @media (prefers-reduced-transparency:reduce){
   .box{background:#262624;-webkit-backdrop-filter:none;backdrop-filter:none}
   .pop{background:#1f1f1d;-webkit-backdrop-filter:none;backdrop-filter:none}
+  .tab{background:#262624;-webkit-backdrop-filter:none;backdrop-filter:none}
 }
 </style>
 </head>
@@ -136,6 +148,7 @@ mark.on{background:rgba(217,119,87,.32)}
   <div id="feed"></div>
 </div>
 <div class="dock"><div class="in">
+  <div class="tabs" id="tabs" role="tablist" aria-label="tabs" hidden></div>
   <div class="box"><span class="p">&gt;</span><textarea id="inp" rows="1" spellcheck="false" autocomplete="off" aria-label="input"></textarea></div>
   <div class="hint"><span><span class="long">enter to add · shift+enter newline · select any text to comment · /lock</span><span class="short"></span></span><span><span class="dot" id="dot"></span><span id="st">offline</span></span></div>
 </div></div>
@@ -167,8 +180,8 @@ const store = {
   del(k){ try { localStorage.removeItem(k); } catch (e) {} },
 };
 
-/* ---------- screenshot hook: #shot=feed|comment|locked, fake data, no API ---------- */
-const SHOT = (location.hash.match(/^#shot=(feed|comment|locked)\b/) || [])[1] || null;
+/* ---------- screenshot hook: #shot=feed|comment|locked|tabs, fake data, no API ---------- */
+const SHOT = (location.hash.match(/^#shot=(feed|comment|locked|tabs)\b/) || [])[1] || null;
 const T0 = new Date(2026, 9, 14, 13, 2).getTime();
 let FAKE = SHOT ? {rev: 1, msgs: [
   {id:1, ts:T0, kind:'user', edited:null, text:'what is a good way to learn how databases work?'},
@@ -183,8 +196,14 @@ let FAKE = SHOT ? {rev: 1, msgs: [
 ]} : null;
 if (FAKE) { // anchor the second fake comment by searching, so the offsets stay honest
   const c = FAKE.comments[1]; c.quote = 'one working B-tree'; c.text = 'which language though?\nprobably Go';
+  FAKE.tabs = [{tab: 'main', n: 3}].concat(SHOT === 'tabs' ? [{tab: 'context', n: 9}] : []);
 }
 let fakeId = 100;
+
+/* ---------- tab: #tab=<name> opens that tab, main is the default ---------- */
+const TAB_RX = /(?:^#|&)tab=([a-z0-9-]{1,40})(?=&|$)/;
+let tab = (location.hash.match(TAB_RX) || [])[1] || 'main';
+const tabHash = () => tab === 'main' ? '' : '#tab=' + tab;
 
 /* ---------- key: capture #k= once, then scrub it from the URL ---------- */
 (function takeKey(){
@@ -198,7 +217,7 @@ let fakeId = 100;
     else if (had !== k) // a link must not silently swap out a working key: check it first
       api('GET', '/feed', null, k).then(() => { store.set(KEY, k); poll(true); }, () => {});
   }
-  history.replaceState(null, '', location.pathname + location.search);
+  history.replaceState(null, '', location.pathname + location.search + tabHash());
 })();
 const getKey = () => SHOT === 'locked' ? '' : SHOT ? 'shot' : (store.get(KEY) || '');
 
@@ -442,6 +461,7 @@ function busy(){
 }
 
 function render(){
+  renderTabs();
   if (busy()) { pending = true; return; }
   pending = false;
   feedEl.textContent = '';
@@ -472,7 +492,7 @@ function render(){
   for (const id of [...nodes.keys()]) if (!seen.has(id)) nodes.delete(id);
   for (const s of sysLines) feedEl.append(s);
   if (!feed.msgs.length && !sysLines.length)
-    feedEl.append(h('div', {class: 'sys', text: '  nothing here yet. type below, or post from Claude Code with ./cnp'}));
+    feedEl.append(h('div', {class: 'sys', text: '  nothing here yet. type below, or post from Claude Code with ./cnp' + (tab === 'main' ? '' : ' --tab ' + tab)}));
   if (nearBottom || firstPaint) { firstPaint = false; scrollTo(0, document.documentElement.scrollHeight); }
 }
 let firstPaint = true;
@@ -491,16 +511,45 @@ async function poll(force){
   if (!getKey()) { status(false, 'locked'); render(); return; }
   if (polling) return;
   polling = true;
+  const t = tab;
   try {
-    const f = await api('GET', '/feed' + (force || !feed ? '' : '?rev=' + rev));
+    const f = await api('GET', '/feed?tab=' + t + (force || !feed ? '' : '&rev=' + rev));
+    if (t !== tab) return; // the tab changed mid-flight: drop this, finally fetches the new one
     status(true, 'live');
-    if (!f.same) { feed = f; rev = f.rev; render(); }
+    if (!f.same) { feed = f; rev = f.rev; tabList = f.tabs || []; render(); }
     else if (pending) render();
   } catch (e) {
     if (e.status === 401) { store.del(KEY); feed = null; status(false, 'locked'); sys('that key was refused. type it again.', true); }
     else status(false, 'offline');
-  } finally { polling = false; }
+  } finally { polling = false; if (t !== tab) poll(true); }
 }
+
+/* ---------- tabs ---------- */
+const tabsEl = document.getElementById('tabs');
+let tabList = [], tabsSig = null;
+function renderTabs(){
+  const names = tabList.map(x => x.tab);
+  if (!names.includes('main')) names.unshift('main');
+  if (!names.includes(tab)) names.push(tab);
+  const show = !!getKey() && names.length > 1;
+  const sig = show ? names.join(' ') + '|' + tab : '';
+  if (sig === tabsSig) return;
+  tabsSig = sig;
+  tabsEl.textContent = '';
+  tabsEl.hidden = !show;
+  if (show) for (const t of names)
+    tabsEl.append(h('button', {class: 'tab', type: 'button', role: 'tab', text: t,
+      'aria-selected': t === tab ? 'true' : 'false', onclick: () => switchTab(t)}));
+  grow();
+}
+function switchTab(t){
+  if (t === tab) return;
+  tab = t;
+  history.replaceState(null, '', location.pathname + location.search + tabHash());
+  feed = null; nodes.clear(); sysLines.length = 0; firstPaint = true;
+  render(); poll(true);
+}
+addEventListener('hashchange', () => switchTab((location.hash.match(TAB_RX) || [])[1] || 'main'));
 setInterval(() => { if (document.visibilityState === 'visible') poll(); }, POLL_MS);
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') poll(); });
 
@@ -541,7 +590,7 @@ async function submit(){
   }
   inp.value = ''; store.del(DRAFT); grow();
   try {
-    await api('POST', '/msg', {kind: 'note', text: v});
+    await api('POST', '/msg', {kind: 'note', text: v, tab});
     firstPaint = true;
     await poll(true);
   } catch (e) {

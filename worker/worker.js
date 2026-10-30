@@ -16,10 +16,12 @@
 //                                  started from (0 = the original .md); 409 if stale.
 //
 // The terminal feed (the CLI-style page): messages plus comments anchored to text in them.
-// GET    /feed[?rev=N]       {rev, msgs:[{id, ts, kind, text, edited}], comments:[{id, ts, msg,
-//                            start, end, quote, text, edited}]}, oldest first; {rev, same:true}
-//                            when rev is already current (cheap polling).
-// POST   /msg               {kind: user|claude|note, text} -> 201 msg
+// Messages live in tabs ("main" unless said otherwise); a tab exists while it has messages.
+// GET    /feed[?tab=T][&rev=N]  {rev, tabs:[{tab, n}], msgs:[{id, ts, kind, text, edited}],
+//                            comments:[{id, ts, msg, start, end, quote, text, edited}]} for tab T,
+//                            oldest first; {rev, same:true} when rev is already current (cheap
+//                            polling). rev counts changes in every tab.
+// POST   /msg               {kind: user|claude|note, text, tab?} -> 201 msg
 // PUT    /msg?id=N          {text} -> 200 msg
 // DELETE /msg?id=N          -> {ok:true}, also deletes its comments
 // POST   /comment           {msg, start, end, quote, text} -> 201 comment. start/end are
@@ -27,7 +29,7 @@
 // PUT    /comment?id=N      {text} -> 200 comment
 // DELETE /comment?id=N      -> {ok:true}
 //
-// entry: /^[a-z0-9-]{1,40}$/ ("inbox" = general bucket). text: 1 to 20000 chars
+// entry, tab: /^[a-z0-9-]{1,40}$/ ("inbox" = general bucket). text: 1 to 20000 chars
 // after cleaning (docs 200000). 5000 notes max. ts/edited are ms epoch ints,
 // edited null if never.
 
@@ -93,6 +95,12 @@ export class Notebook extends DurableObject {
       id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, edited INTEGER, msg INTEGER,
       start INTEGER, end INTEGER, quote TEXT, text TEXT)`);
     this.sql.exec('CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v INTEGER)');
+    // Schema 2: tabs. Messages from before tabs land in 'main'.
+    if (!this.sql.exec("SELECT v FROM meta WHERE k = 'schema'").toArray().length) {
+      this.sql.exec("ALTER TABLE msgs ADD COLUMN tab TEXT NOT NULL DEFAULT 'main'");
+      this.sql.exec("INSERT INTO meta(k, v) VALUES('schema', 2)");
+    }
+    this.sql.exec('CREATE INDEX IF NOT EXISTS idx_msgs_tab ON msgs(tab, id)');
   }
   rev() {
     return (this.sql.exec("SELECT v FROM meta WHERE k = 'rev'").toArray()[0] || { v: 0 }).v;
@@ -100,13 +108,15 @@ export class Notebook extends DurableObject {
   bump() {
     this.sql.exec("INSERT INTO meta(k, v) VALUES('rev', 1) ON CONFLICT(k) DO UPDATE SET v = v + 1");
   }
-  feed(rev) {
+  feed(rev, tab) {
     const now = this.rev();
     if (rev === now) return { rev: now, same: true };
     return {
       rev: now,
-      msgs: this.sql.exec('SELECT id, ts, kind, text, edited FROM msgs ORDER BY id').toArray(),
-      comments: this.sql.exec('SELECT id, ts, msg, start, end, quote, text, edited FROM comments ORDER BY id').toArray(),
+      tabs: this.sql.exec('SELECT tab, COUNT(*) n FROM msgs GROUP BY tab ORDER BY MIN(id)').toArray(),
+      msgs: this.sql.exec('SELECT id, ts, kind, text, edited FROM msgs WHERE tab = ? ORDER BY id', tab).toArray(),
+      comments: this.sql.exec(`SELECT id, ts, msg, start, end, quote, text, edited FROM comments
+        WHERE msg IN (SELECT id FROM msgs WHERE tab = ?) ORDER BY id`, tab).toArray(),
     };
   }
   msg(id) {
@@ -115,10 +125,10 @@ export class Notebook extends DurableObject {
   comment(id) {
     return this.sql.exec('SELECT id, ts, msg, start, end, quote, text, edited FROM comments WHERE id = ?', id).toArray()[0] || null;
   }
-  addMsg(kind, text) {
+  addMsg(kind, text, tab) {
     if (this.sql.exec('SELECT COUNT(*) c FROM msgs').one().c >= MAX_ROWS) return null;
-    const id = this.sql.exec('INSERT INTO msgs(ts, edited, kind, text) VALUES(?, NULL, ?, ?) RETURNING id',
-      Date.now(), kind, text).one().id;
+    const id = this.sql.exec('INSERT INTO msgs(ts, edited, kind, text, tab) VALUES(?, NULL, ?, ?, ?) RETURNING id',
+      Date.now(), kind, text, tab).one().id;
     this.bump();
     return this.msg(id);
   }
@@ -219,8 +229,9 @@ async function docRoute(req, url, nb, json) {
 async function feedRoute(req, url, nb, json) {
   if (url.pathname === '/feed') {
     if (req.method !== 'GET') return json({ error: 'method not allowed' }, 405);
-    const r = url.searchParams.get('rev');
-    return json(await nb.feed(r !== null && /^\d{1,15}$/.test(r) ? Number(r) : -1));
+    const r = url.searchParams.get('rev'), tab = url.searchParams.get('tab') || 'main';
+    if (!SLUG.test(tab)) return json({ error: 'bad tab' }, 400);
+    return json(await nb.feed(r !== null && /^\d{1,15}$/.test(r) ? Number(r) : -1, tab));
   }
   const table = url.pathname === '/msg' ? 'msgs' : 'comments';
   if (req.method !== 'POST' && req.method !== 'PUT' && req.method !== 'DELETE')
@@ -249,7 +260,9 @@ async function feedRoute(req, url, nb, json) {
   }
   if (table === 'msgs') {
     if (!KINDS.includes(body.kind)) return json({ error: 'bad kind' }, 400);
-    const m = await nb.addMsg(body.kind, text);
+    const tab = body.tab === undefined ? 'main' : body.tab;
+    if (typeof tab !== 'string' || !SLUG.test(tab)) return json({ error: 'bad tab' }, 400);
+    const m = await nb.addMsg(body.kind, text, tab);
     return m ? json(m, 201) : json({ error: 'feed full' }, 429);
   }
   const ok = n => Number.isSafeInteger(n) && n >= 0;
